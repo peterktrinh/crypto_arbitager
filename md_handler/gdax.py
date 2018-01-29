@@ -29,6 +29,7 @@ class WebsocketClient(object):
         self.api_secret = api_secret
         self.api_passphrase = api_passphrase
         self.should_print = should_print
+        self.book = Book()
 
     def start(self):
         def _go():
@@ -115,10 +116,24 @@ class WebsocketClient(object):
             print("\n-- Socket Closed --")
 
     def on_message(self, msg):
-        if self.should_print:
-            print(msg)
-        if self.mongo_collection:  # dump JSON to given mongo collection
-            self.mongo_collection.insert_one(msg)
+        # If first message, init order book
+        if msg['type'] == 'snapshot':
+            for each in msg['asks']:
+                # event, symbol, exchange, id_num, qty, price, timestamp
+                input = ','.join(['A', msg['product_id'], 'GDAX', each[0], each[1], each[0], '0'])
+                self.book.ask(input)
+            for each in msg['bids']:
+                input = ','.join(['B', msg['product_id'], 'GDAX', each[0], each[1], each[0], '0'])
+                self.book.bid(input)
+        # Otherwise update order book
+        elif msg['type'][0] == 'l2update':
+            change = msg['changes'][0]
+            if change[0] == 'sell':
+                input = ','.join(['A', msg['product_id'], 'GDAX', change[1], change[2], change[1], msg['time']])
+                self.book.ask(input)
+            elif change[0] == 'buy':
+                input = ','.join(['B', msg['product_id'], 'GDAX', change[1], change[2], change[1], msg['time']])
+                self.book.bid(input)
 
     def on_error(self, e, data=None):
         self.error = e
@@ -133,46 +148,23 @@ if __name__ == "__main__":
 
     class MyWebsocketClient(gdax.WebsocketClient):
         def on_open(self):
-            global book
             self.url = "wss://ws-feed.gdax.com/"
             self.channels = ['level2']
             self.products = ["BTC-USD"]
-            book = Book()
-
-
-        def on_message(self, msg):
-            # If first message, init order book
-            if msg['type'] == 'snapshot':
-                for each in msg['asks']:
-                    # event, symbol, exchange, id_num, qty, price, timestamp
-                    input = ','.join(['A', msg['product_id'], 'GDAX', each[0], each[1], each[0], '0'])
-                    book.ask(input)
-                for each in msg['bids']:
-                    input = ','.join(['B', msg['product_id'], 'GDAX', each[0], each[1], each[0], '0'])
-                    book.bid(input)
-            # Otherwise update order book
-            elif msg['type'][0] == 'l2update':
-                change = msg['changes'][0]
-                if change[0] == 'sell':
-                    input = ','.join(['A', msg['product_id'], 'GDAX', change[1], change[2], change[1], msg['time']])
-                    book.ask(input)
-                elif change[0] == 'buy':
-                    input = ','.join(['B', msg['product_id'], 'GDAX', change[1], change[2], change[1], msg['time']])
-                    book.bid(input)
 
         def on_close(self):
             print('bids are:')
             count = 0
-            if book.bids != None and len(book.bids) > 0:
-                for k, v in book.bids.price_tree.items(reverse=True):
+            if self.book.bids != None and len(self.book.bids) > 0:
+                for k, v in self.book.bids.price_tree.items(reverse=True):
                     print('%s' % v)
                     count += 1
                     if count>10:
                         break
             print('asks are:')
             count = 0
-            if book.asks != None and len(book.asks) > 0:
-                for k, v in book.asks.price_tree.items(reverse=False):
+            if self.book.asks != None and len(self.book.asks) > 0:
+                for k, v in self.book.asks.price_tree.items(reverse=False):
                     print('%s' % v)
                     count += 1
                     if count>10:
